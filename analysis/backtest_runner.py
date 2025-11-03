@@ -118,6 +118,11 @@ def run_backtest(
     equity_curve: List[Tuple[datetime, float]] = []
     trades: List[Dict[str, float]] = []
 
+    position_qty = 0.0
+    avg_entry_price = 0.0
+    wins = 0
+    losses = 0
+
     for ts, snapshot in iterate_snapshots(prices, symbol, history_window):
         equity_value = portfolio.cash + portfolio.quantity * snapshot.current_price
         equity_curve.append((ts, float(equity_value)))
@@ -137,6 +142,10 @@ def run_backtest(
             portfolio.cash -= cost
             portfolio.quantity += size
 
+            new_qty = position_qty + size
+            avg_entry_price = ((avg_entry_price * position_qty) + (price * size)) / new_qty if new_qty > 0 else 0.0
+            position_qty = new_qty
+
             strategy.on_trade(signal, price, size, ts)
             trades.append({
                 "timestamp": ts.isoformat(),
@@ -155,6 +164,12 @@ def run_backtest(
             portfolio.cash += proceeds
             portfolio.quantity -= size
 
+            realized = (price - avg_entry_price) * size
+            if realized > 0:
+                wins += 1
+            elif realized < 0:
+                losses += 1
+
             strategy.on_trade(signal, price, size, ts)
             trades.append({
                 "timestamp": ts.isoformat(),
@@ -163,7 +178,12 @@ def run_backtest(
                 "price": price,
                 "size": size,
                 "reason": signal.reason,
+                "realized_pnl": realized,
             })
+
+            position_qty = max(0.0, position_qty - size)
+            if position_qty <= 0:
+                avg_entry_price = 0.0
 
     final_equity = float(equity_curve[-1][1]) if equity_curve else float(starting_cash)
     equity_series = pd.Series({ts: val for ts, val in equity_curve})
@@ -179,9 +199,8 @@ def run_backtest(
     max_drawdown = float(abs(drawdowns.min()) * 100) if not drawdowns.empty else 0.0
 
     trade_count = len(trades)
-    wins = sum(1 for trade in trades if trade["side"] == "sell")
-    losses = trade_count - wins
-    win_rate = float((wins / trade_count) * 100) if trade_count > 0 else 0.0
+    closed_trades = wins + losses
+    win_rate = float((wins / closed_trades) * 100) if closed_trades > 0 else 0.0
 
     metrics = BacktestMetrics(
         symbol=symbol,
