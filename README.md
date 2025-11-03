@@ -1,8 +1,4 @@
-# Swing Reversion Grid Submission Package
-
-Complete, contest-ready delivery of the Swing Reversion Grid strategy. The
-layout mirrors the Adaptive Momentum submission so each entry stays
-self-contained for reviewers and contest judges.
+# Swing Reversion Grid Submission (ENTRY by jayyx03)
 
 ## Repository Layout
 
@@ -28,8 +24,8 @@ swing-grid-submission/
    └─ your_strategy.py
 ```
 
-Remove `analysis/cache/` before packaging if you prefer a smaller archive; the
-backtester will regenerate those files automatically.
+Remove `analysis/cache/` before downloading if you prefer a smaller archive; the
+backtester will regenerate those files automatically
 
 ## Strategy Snapshot
 
@@ -93,15 +89,3 @@ docker run --rm -p 8080:8080 -p 3010:3010 `
   -e BOT_STARTING_CASH=10000 `
   swing-grid-bot
 ```
-
-## Submission Checklist
-
-- [ ] Re-run the backtest with desired parameters
-      (`analysis/configs/swing_grid_best.json` stores the tuned combo).
-- [ ] Prune `analysis/cache/` if contest rules require raw-run reproducibility.
-- [ ] Zip `swing-grid-submission/` into `swing-grid-submission.zip` for upload.
-- [ ] Share the archive (or this folder) alongside the Adaptive Momentum entry
-      so both strategies remain auditable.
-
-Following these steps leaves the swing grid submission ready for GitHub upload
-or direct contest handoff.
