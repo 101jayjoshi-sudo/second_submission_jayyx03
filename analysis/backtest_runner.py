@@ -77,6 +77,8 @@ def iterate_snapshots(prices: pd.Series, symbol: str, history_window: int) -> It
         price_memory.append(float(price))
         if len(price_memory) > history_window:
             price_memory = price_memory[-history_window:]
+        if len(price_memory) < history_window:
+            continue
         yield timestamp.to_pydatetime().replace(tzinfo=timezone.utc), MarketSnapshot(
             symbol=symbol,
             prices=list(price_memory),
@@ -105,6 +107,10 @@ def run_backtest(
             close_series = df[matches[0]]
     prices = close_series.dropna().astype(float)
 
+    strategy_config = dict(strategy_config)
+    strategy_config.setdefault("symbol", symbol)
+    preload_configured = int(strategy_config.get("preload_history_bars", 0))
+
     strategy = strategy_cls(strategy_config, exchange=None)
     strategy.prepare()
 
@@ -112,7 +118,16 @@ def run_backtest(
     anchor_period = int(strategy_config.get("anchor_period", getattr(strategy, "anchor_period", slow_period)))
     atr_period = int(strategy_config.get("atr_period", getattr(strategy, "atr_period", 48)))
     rsi_period = int(strategy_config.get("rsi_period", getattr(strategy, "rsi_period", 14)))
-    history_window = max(slow_period * 3, anchor_period + 20, atr_period + 20, rsi_period + 20, 200)
+    runtime_preload = getattr(strategy, "preload_history_bars", preload_configured)
+    history_window = max(
+        slow_period * 3,
+        anchor_period + 20,
+        atr_period + 20,
+        rsi_period + 20,
+        preload_configured,
+        int(runtime_preload),
+        200,
+    )
 
     portfolio = Portfolio(symbol=symbol, cash=starting_cash)
     equity_curve: List[Tuple[datetime, float]] = []
