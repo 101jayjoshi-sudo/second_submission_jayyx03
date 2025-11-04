@@ -48,6 +48,28 @@ class SwingGridStrategy(BaseStrategy):
         self.rsi_period = max(5, int(config.get("rsi_period", 14)))
         self.low_rsi = float(config.get("low_rsi", 38.0))
         self.high_rsi = float(config.get("high_rsi", 62.0))
+        configured_min_history = int(config.get("min_history_bars", 120))
+        self.min_history_bars = max(60, configured_min_history)
+        self.symbol = str(config.get("symbol", "BTC-USD"))
+        raw_preload = config.get("preload_history_bars", 0)
+        try:
+            configured_preload = int(raw_preload)
+        except (TypeError, ValueError):
+            configured_preload = 0
+
+        baseline_preload = max(self.min_history_bars, self.anchor_period + 20, self.atr_period + 20, self.rsi_period + 20)
+        if configured_preload > 0:
+            self.preload_history_bars = max(configured_preload, baseline_preload)
+        else:
+            self.preload_history_bars = baseline_preload
+        self._history_buffer: List[float] = []
+        self._max_history_bars = max(
+            self.preload_history_bars * 2,
+            self.anchor_period * 2,
+            self.atr_period * 3,
+            self.min_history_bars * 3,
+            400,
+        )
 
         self._filled_sizes: Dict[int, float] = {level: 0.0 for level in range(1, self.grid_steps + 1)}
         self._last_trade_time: Optional[datetime] = None
@@ -56,12 +78,17 @@ class SwingGridStrategy(BaseStrategy):
 
     def prepare(self) -> None:
         self.last_signal_data = {"status": "ready"}
+        self._preload_history()
 
     def generate_signal(self, market: MarketSnapshot, portfolio: Portfolio) -> Signal:
-        prices = market.prices
-        required = max(self.anchor_period, self.atr_period, self.rsi_period) + 5
+        prices = self._integrate_prices(market.prices)
+        required = self._required_history()
         if len(prices) < required:
-            self.last_signal_data = {"reason": "insufficient_history", "bars": len(prices)}
+            self.last_signal_data = {
+                "reason": "insufficient_history",
+                "bars": len(prices),
+                "needed": required,
+            }
             return Signal("hold", reason="Insufficient history")
 
         anchor = self._sma(prices, self.anchor_period)
@@ -87,6 +114,7 @@ class SwingGridStrategy(BaseStrategy):
             "atr": round(frame.atr, 2),
             "rsi": round(rsi_value, 2) if rsi_value is not None else None,
             "remaining_capacity": round(remaining_capacity, 2),
+            "history_bars": len(prices),
         }
 
         for level in range(self.grid_steps, 0, -1):
@@ -152,10 +180,55 @@ class SwingGridStrategy(BaseStrategy):
         if stamp:
             self._last_trade_time = self._with_timezone(datetime.fromisoformat(stamp))
 
+    def _required_history(self) -> int:
+        return max(self.min_history_bars, self.anchor_period + 5, self.atr_period + 5, self.rsi_period + 5)
+
     def _build_frame(self, anchor: float, atr: float) -> GridFrame:
         buy = [anchor - self.atr_multiplier * atr * step for step in range(1, self.grid_steps + 1)]
         sell = [anchor + self.atr_multiplier * atr * step for step in range(1, self.grid_steps + 1)]
         return GridFrame(anchor=anchor, atr=atr, buy_levels=buy, sell_levels=sell)
+
+    def _preload_history(self) -> None:
+        if self.preload_history_bars <= 0:
+            self.last_signal_data["preload"] = "skipped"
+            return
+        if not self.exchange or not hasattr(self.exchange, "fetch_market_snapshot"):
+            self.last_signal_data["preload"] = "unavailable"
+            return
+
+        limit = max(self.preload_history_bars, self._required_history())
+        try:
+            snapshot = self.exchange.fetch_market_snapshot(self.symbol, limit=limit)
+        except Exception as exc:  # noqa: BLE001 - surface preload issues for operators
+            self.last_signal_data["preload_error"] = str(exc)
+            return
+
+        self._history_buffer = list(snapshot.prices)[-self._max_history_bars:]
+        self.last_signal_data["preload_bars"] = len(self._history_buffer)
+
+    def _integrate_prices(self, snapshot_prices: List[float]) -> List[float]:
+        series = list(snapshot_prices)
+        if not series:
+            return list(self._history_buffer)
+
+        if not self._history_buffer:
+            self._history_buffer = series[-self._max_history_bars:]
+            return list(self._history_buffer)
+
+        max_overlap = min(len(self._history_buffer), len(series))
+        overlap = 0
+        for span in range(max_overlap, 0, -1):
+            if self._history_buffer[-span:] == series[:span]:
+                overlap = span
+                break
+
+        tail = series if overlap == 0 else series[overlap:]
+        if tail:
+            self._history_buffer.extend(tail)
+        if len(self._history_buffer) > self._max_history_bars:
+            self._history_buffer = self._history_buffer[-self._max_history_bars:]
+
+        return list(self._history_buffer)
 
     @staticmethod
     def _sma(values: List[float], period: int) -> float:
@@ -164,7 +237,11 @@ class SwingGridStrategy(BaseStrategy):
 
     @staticmethod
     def _atr(values: List[float], period: int) -> float:
-        span = values[-(period + 1):]
+        available = len(values)
+        if available <= 1:
+            return 0.0
+        effective_period = min(period, available - 1)
+        span = values[-(effective_period + 1):]
         if len(span) <= 1:
             return 0.0
         ranges = [abs(curr - prev) for prev, curr in zip(span, span[1:])]
